@@ -1,11 +1,16 @@
 import sys
 import os
 import json
-import mayaUsd
+import mayaUsd.ufe
+import mayaUsd.lib
+import mayaUsd_createStageWithNewLayer
+import ufe
+import math
 import logging
 import maya.cmds as cmds
 import maya.OpenMayaUI as omui
-from pxr import Usd, UsdGeom, Sdf
+from pxr import Usd, UsdGeom, Gf, Sdf
+from util_usd import ufeUtils
 
 try:
     from PySide6.QtCore import *
@@ -21,10 +26,13 @@ except Exception:
     from shiboken2 import wrapInstance
 
 
+usdSeparator = '/'
+
 pathDir = os.path.dirname(sys.modules[__name__].__file__)
 fileUi = '%s/uiwidget.ui' % pathDir
 config_file_path = '%s/ui_config.json' % pathDir
 output_path = 'D:/Work_Year4/THESIS/example_scenes'
+
 
 def load_configjson():
     with open(config_file_path, 'r') as f:
@@ -33,7 +41,7 @@ def load_configjson():
 
     return root_path
 
-#def maya_plugin():
+# def maya_plugin():
 #    if not cmds.pluginInfo("mayaUsdPlugin", query=True, loaded=True):
 #        cmds.loadPlugin("mayaUsdPlugin")
 
@@ -46,7 +54,7 @@ class MainWidget(QMainWindow):
         self.setCentralWidget(self.mainwidget)
         self.root_path = load_configjson()
         self.setWindowTitle('Export /Import USD')
-        self.resize(450,500)
+        self.resize(450, 500)
         self.current_stage = None
         self.current_layer = None
 
@@ -54,83 +62,53 @@ class MainWidget(QMainWindow):
         self.mainwidget.add_button.clicked.connect(self.add_object)
         self.mainwidget.remove_button.clicked.connect(self.remove_object)
         self.mainwidget.export_button.clicked.connect(self.export_selected_usd)
-        self.mainwidget.set_xform_checkBox.stateChanged.connect(self.set_xform)
-        self.mainwidget.import_pushButton.clicked.connect(self.createStageWithNewLayer)
+        #self.mainwidget.set_xform_checkBox.stateChanged.connect(self.set_xform)
+        self.mainwidget.import_pushButton.clicked.connect(self.import_usd_to_own_stage)
         self.mainwidget.browse_pushButton.clicked.connect(self.open_selcect_folder)
         self.mainwidget.browseX_pushButton.clicked.connect(self.open_folder)
 
-    def add_object(self): #<<user select obj and click add to show in table widget
-       selcect_object = cmds.ls( sl=True )
-       for obj in selcect_object:
-        row_position = self.mainwidget.export_tableWidget.rowCount()
-        self.mainwidget.export_tableWidget.insertRow(row_position)
-        self.mainwidget.export_tableWidget.setItem(row_position, 1, QTableWidgetItem(obj))
-    
+    def add_object(self):  # <<user select obj and click add to show in table widget
+        selcect_object = cmds.ls(sl=True)
+        for obj in selcect_object:
+            row_position = self.mainwidget.export_tableWidget.rowCount()
+            self.mainwidget.export_tableWidget.insertRow(row_position)
+            self.mainwidget.export_tableWidget.setItem(
+                row_position, 1, QTableWidgetItem(obj))
+
     def remove_object(self):
         select_rows = set(index.row() for index in self.mainwidget.export_tableWidget.selectedIndexes())
         for row in sorted(select_rows):
             self.mainwidget.export_tableWidget.removeRow(row)
-    
+
     def output_text(self, source_row):
         column_position = self.mainwidget.export_tableWidget.columnCount()
         self.mainwidget.export_tableWidget.insertRow(column_position)
         for col in range(self.mainwidget.export_tableWidget.columnCount()):
-            source_item = self.mainwidget.export_tableWidget.item(source_row, col)
+            source_item = self.mainwidget.export_tableWidget.item(
+                source_row, col)
         if source_item:
             source_text = source_item.text()
-            self.mainwidget.export_tableWidget.setItem(column_position, col, QTableWidgetItem(source_text))
-    
-    def set_xform(self): #<< ต้องปรับแก้จุดหมุน
-        if self.mainwidget.set_xform_checkBox.isChecked():
-            obj_selcect = cmds.ls(selection=True)
-        #is_checked = self.mainwidget.set_xform_checkBox.isChecked()
-        #print("Check:", is_checked)
-            for obj in obj_selcect:
-                cmds.xform(obj, ws=True, t=(0, 0, 0))
+            self.mainwidget.export_tableWidget.setItem(
+                column_position, col, QTableWidgetItem(source_text))
 
-    '''def compute_bbox(prim: Usd.Prim) -> Gf.Range3d:
-        imageable = UsdGeom.Imageable(prim)
-        time = Usd.TimeCode.Default() # The time at which we compute the bounding box
-        bound = imageable.ComputeWorldBound(time, UsdGeom.Tokens.default_)
-        bound_range = bound.ComputeAlignedBox()
-        return bound_range
+    #def set_xform(self):  # << ต้องปรับแก้จุดหมุน
+    #    if self.mainwidget.set_xform_checkBox.isChecked():
+    #        obj_selcect = cmds.ls(selection=True)
+        # is_checked = self.mainwidget.set_xform_checkBox.isChecked()
+        # print("Check:", is_checked)
+    #        for obj in obj_selcect:
+    #            cmds.xform(obj, ws=True, t=(0, 0, 0)) 
 
-    def add_payload(prim: Usd.Prim, payload_asset_path: str, payload_target_path: Sdf.Path) -> None:
-        payloads: Usd.Payloads = prim.GetPayloads()
-        payloads.AddPayload(
-            assetPath=payload_asset_path,
-            primPath=payload_target_path # OPTIONAL: Payload a specific target prim. Otherwise, uses the payloadd layer's defaultPrim.
-        )
+    def export_selected_usd(self):
+        stage = Usd.Stage.CreateNew('D:/Work_Year4/THESIS/02.usd')
+        xformPrim = UsdGeom.Xform.Define(stage, '/hello')
+        spherePrim = UsdGeom.Sphere.Define(stage, '/hello/world')
+        stage.GetRootLayer().Save()
 
-    def geom_stage(fileName, root_asset, render_value, proxy_value):
+        print(stage)
+        return xformPrim, spherePrim
 
-        stripExtension = os.path.splitext(fileName)[0]
-        geom_name = stripExtension + '_geo'
-
-        # Export the geo file
-        cmds.file(geom_name, options=";exportDisplayColor=1;exportColorSets=0;mergeTransformAndShape=1;exportComponentTags=0;defaultUSDFormat=usdc;jobContext=[Arnold];materialsScopeName=mtl", 
-                typ="USD Export", pr=True, ch=True, chn=True, exportSelected=True, f=True)
-        
-        # Replace xforms with scopes for purpose groups
-        stage = Usd.Stage.Open(geom_name + '.usd')
-        prim_geo = stage.GetPrimAtPath(root_asset + "/geo")
-        prim_geo.SetTypeName("Scope")
-        
-        # Extents Hint BBox (not working with unloaded payloads currently in Maya)
-        bbox_cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), ['default', 'render'])    
-        root_geom_model_API = UsdGeom.ModelAPI.Apply(prim_geo)
-        extentsHint = root_geom_model_API.ComputeExtentsHint(bbox_cache)
-        root_geom_model_API.SetExtentsHint(extentsHint)
-        
-        prim_render = stage.GetPrimAtPath(root_asset + "/geo/" + render_value)
-        prim_render.SetTypeName("Scope")
-        prim_proxy = stage.GetPrimAtPath(root_asset + "/geo/" + proxy_value)
-        prim_proxy.SetTypeName("Scope")
-
-        stage.Save()'''
-
-    def export_selected_usd(self, output_path):
-        obj_selcect = cmds.ls(selection=True)
+        '''obj_selcect = cmds.ls(selection=True)
         cmds.loadPlugin('mayaUsdPlugin', quiet=True)
         obj_selcect_export = []
         
@@ -142,48 +120,27 @@ class MainWidget(QMainWindow):
 
         cmds.select(obj_selcect_export, replace=True)
         cmds.mayaUSDExport(selection=True, file=output_path)
-        #add_payload()
+        #add_payload()'''
 
     def add_payload(self, prim: Usd.Prim, payload_asset_path: str, payload_target_path: Sdf.Path) -> None:
         payloads: Usd.Payloads = prim.GetPayloads()
         payloads.AddPayload(
             assetPath=payload_asset_path,
-            primPath=payload_target_path # OPTIONAL: Payload a specific target prim. Otherwise, uses the payloadd layer's defaultPrim.
-        )
+            # OPTIONAL: Payload a specific target prim. Otherwise, uses the payloadd layer's defaultPrim.
+            primPath=payload_target_path
+            )
 
     def create_new_usd_stage(self):
-        cmds.mayaUSDImport(file = 'D:/Work_Year4/THESIS/Maya/living_room_assets/scenes/USD/dice.usd') 
-        #stage =  Usd.Stage.CreateNew(path_scene_usd)
-        #stage1 = cmds.mayaUsdCreateStageWithNewLayer()
-        #xformPrim = UsdGeom.Xform.Define(stage, '/hello')
-        #stage.GetRootLayer().Save()
+        # cmds.mayaUSDImport(file = 'D:/Work_Year4/THESIS/Maya/living_room_assets/scenes/USD/dice.usd')
+        # stage =  Usd.Stage.CreateNew()
+        # stage1 = cmds.mayaUsdCreateStageWithNewLayer()
+        # xformPrim = UsdGeom.Xform.Define(stage, '/hello')
+        # stage.GetRootLayer().Save()
 
         stage = cmds.mayaUsdCreateStageWithNewLayer('')
         xform_path = "/World/MyXform"
         xform = UsdGeom.Xform.Define(stage, xform_path)
         return xform
-    
-    def createStageWithNewLayer(self):
-        # Simply create a proxy shape. Since it does not have a USD file associated
-        # (in the .filePath attribute), the proxy shape base will create an empty
-        # stage in memory. This will create the session and root layer as well.
-
-        if hasattr(mayaUsd, 'ufe') and hasattr(mayaUsd.ufe, 'createStageWithNewLayer'):
-            # Empty parent means parent to Maya world node.
-            #shapeNode = mayaUsd.ufe.createStageWithNewLayer('')
-            shapeNode = cmds.mayaUsdCreateStageWithNewLayer('')
-            cmds.mayaUSDImport(file = 'D:/Work_Year4/THESIS/False.usd') 
-
-            #cmds.select(shapeNode, replace=True)
-            return shapeNode
-        else:
-            shapeNode = cmds.createNode('mayaUsdProxyShape', skipSelect=True, name='stageShape1')
-            cmds.connectAttr('time1.outTime', shapeNode+'.time')
-            cmds.select(shapeNode, replace=True)
-            fullPath = cmds.ls(shapeNode, long=True)
-            return fullPath[0]
-        
-    print('create_stage')
 
     def open_selcect_folder(self):
         folder_path = QFileDialog.getExistingDirectory()
@@ -195,14 +152,15 @@ class MainWidget(QMainWindow):
     def open_folder(self):
         folder_path = QFileDialog.getExistingDirectory()
         self.mainwidget.path_export.setText(folder_path)
-    
+
     def show_usd_file(self):
         self.mainwidget.import_listWidget.clear()
 
         folder_path = self.mainwidget.path_import.text()
 
         if not folder_path or not os.path.exists(folder_path):
-            QWidget.QMessageBox.warning(self, "Error", "Invalid folder path selected!")
+            QWidget.QMessageBox.warning(
+                self, "Error", "Invalid folder path selected!")
             return
 
         # Find all .usd files in the folder
@@ -211,12 +169,78 @@ class MainWidget(QMainWindow):
         # Populate the ListWidget
         if usd_files:
             self.mainwidget.import_listWidget.addItems(usd_files)
-        else:
-            QWidget.QMessageBox.information(self, "No Files Found", "No .usd files found in the selected folder.")
+            return
 
-    #def import_usd(self):
+    def onItemSelected(self):
+        '''Handles user selecting a USD file and importing it into the stage.'''
+        folder_path = self.mainwidget.path_import.text()
+        usd_file_name = self.mainwidget.import_listWidget.currentItem().text()
+        usd_file_path = os.path.normpath(
+            os.path.join(folder_path, usd_file_name))
 
-    #def create_xform(self):
+        print(f"Selected USD File: {usd_file_path}")
+
+        if not hasattr(self, "stage"):
+            print("No stage found. Creating a new stage...")
+            self.createSimpleStage()
+
+        self.importUsdIntoStage(usd_file_path)
+
+    def importUsdIntoStage(self, usd_file_path):
+        '''Imports a selected USD file into the existing stage.'''
+        if not os.path.exists(usd_file_path):
+            print(f"Error: File not found - {usd_file_path}")
+            return
+
+        try:
+            print(f"Importing USD file into stage: {usd_file_path}")
+            cmds.mayaUSDImport(usd_file_path)
+
+        except Exception as e:
+            print(f"Error importing USD file: {e}")
+
+    def import_usd_to_own_stage(self):
+        """Import a USD file into its own stage in Maya when button is clicked"""
+        # Get folder path and file name from UI elements
+        folder_path = self.mainwidget.path_import.text()
+
+        # Make sure a file is selected in the list widget
+        if not self.mainwidget.import_listWidget.currentItem():
+            print("Error: No file selected")
+            return
+
+        usd_file_name = self.mainwidget.import_listWidget.currentItem().text()
+        usd_file_path = os.path.normpath(
+            os.path.join(folder_path, usd_file_name))
+
+        print(f"Selected USD File: {usd_file_path}")
+
+        if not os.path.exists(usd_file_path):
+            print(f"Error: File not found - {usd_file_path}")
+            return
+
+        print(f"Importing USD file into its own stage: {usd_file_path}")
+
+        try:
+            # Create a proxy shape node for the USD stage
+            proxy_shape = cmds.createNode('mayaUsdProxyShape')
+            transform_node = cmds.listRelatives(proxy_shape, parent=True)[0]
+
+            # Set the file path for the proxy shape to load the USD file
+            cmds.setAttr(f"{proxy_shape}.filePath",
+                         usd_file_path, type="string")
+
+            # Optional: Give the node a meaningful name based on the file
+            file_name = os.path.basename(usd_file_path).split('.')[0]
+            cmds.rename(transform_node, f"{file_name}_stage")
+
+            print(f"Created stage with proxy shape: {proxy_shape}")
+
+        except Exception as e:
+            print(f"Error creating USD stage: {e}")
+            import traceback
+            traceback.print_exc()
+
 
 class MayaUsdLayer(MainWidget):
     hosts = ['maya']
@@ -261,6 +285,7 @@ class MayaUsdLayer(MainWidget):
             "Extracted instance {} to {}".format(instance.name, file_path)
         )
 
+
 def setup_ui_maya(design_widget, parent):
     fileUi = QDir(os.path.dirname(design_widget))
     qt_loader = QUiLoader()
@@ -274,6 +299,7 @@ def setup_ui_maya(design_widget, parent):
 
     return widget
 
+
 def run():
     global ui
     try:
@@ -284,5 +310,6 @@ def run():
     ptr = wrapInstance(int(omui.MQtUtil.mainWindow()), QWidget)
     ui = MainWidget(parent=ptr)
     ui.show()
+
 
 run()
