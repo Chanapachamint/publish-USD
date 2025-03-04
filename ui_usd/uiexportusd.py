@@ -55,30 +55,115 @@ class MainWidget(QMainWindow):
         self.root_path = load_configjson()
         self.setWindowTitle('Export /Import USD')
         self.resize(450, 500)
-        self.current_stage = None
-        self.current_layer = None
+        self.context_menu = QMenu(self)
+        
 
         #self.mainwidget.path_export.setText(pathDir)
         self.mainwidget.add_button.clicked.connect(self.add_object)
         self.mainwidget.remove_button.clicked.connect(self.remove_object)
-        self.mainwidget.export_button.clicked.connect(self.export_selected_usd)
-        #self.mainwidget.set_xform_checkBox.stateChanged.connect(self.set_xform)
+        self.mainwidget.export_button.clicked.connect(self.export_selected_objects)
+        # Connect the tableWidget selection signal to sync function
+        self.mainwidget.export_tableWidget.itemSelectionChanged.connect(self.sync_selection_with_maya)
+        self.mainwidget.export_all_checkBox.stateChanged.connect(self.export_all_checkbox_changed)
         self.mainwidget.import_pushButton.clicked.connect(self.import_usd_to_own_stage)
         self.mainwidget.browse_pushButton.clicked.connect(self.open_selcect_folder)
         self.mainwidget.browseX_pushButton.clicked.connect(self.open_folder)
+        self.mainwidget.export_tableWidget.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.mainwidget.export_tableWidget.customContextMenuRequested.connect(self.show_table_context_menu)
+
+        clear_item = self.context_menu.addAction("Clear")
+        clear_item.triggered.connect(self.clear_all_objects)
 
     def add_object(self):  # <<user select obj and click add to show in table widget
         selcect_object = cmds.ls(sl=True)
+        
+        # First, build a list of existing objects in the tableWidget
+        existing_objects = []
+        for row in range(self.mainwidget.export_tableWidget.rowCount()):
+            item = self.mainwidget.export_tableWidget.item(row, 1)
+            if item:
+                existing_objects.append(item.text())
+        
+        # Add only objects that don't already exist in the table
         for obj in selcect_object:
-            row_position = self.mainwidget.export_tableWidget.rowCount()
-            self.mainwidget.export_tableWidget.insertRow(row_position)
-            self.mainwidget.export_tableWidget.setItem(
-                row_position, 1, QTableWidgetItem(obj))
+            if obj not in existing_objects:
+                row_position = self.mainwidget.export_tableWidget.rowCount()
+                self.mainwidget.export_tableWidget.insertRow(row_position)
+                self.mainwidget.export_tableWidget.setItem(
+                    row_position, 1, QTableWidgetItem(obj))
+    
+    def sync_selection_with_maya(self):
+        """
+        Synchronizes the selection between tableWidget and Maya's outliner.
+        When an item is selected in the tableWidget, it also selects that object in Maya.
+        """
+        # Get selected items from the tableWidget
+        selected_rows = set(index.row() for index in self.mainwidget.export_tableWidget.selectedIndexes())
+        
+        if selected_rows:
+            # Create a list to store the object names to be selected in Maya
+            objects_to_select = []
+            
+            # Get object names from the selected rows in the tableWidget
+            for row in selected_rows:
+                item = self.mainwidget.export_tableWidget.item(row, 1)
+                if item and item.text():
+                    object_name = item.text()
+                    # Check if the object exists in the Maya scene
+                    if cmds.objExists(object_name):
+                        objects_to_select.append(object_name)
+            
+            # Clear current selection in Maya
+            cmds.select(clear=True)
+            
+            # Select objects in Maya if any valid objects found
+            if objects_to_select:
+                cmds.select(objects_to_select, add=True)
+
+    def export_all_checkbox_changed(self):
+        """
+        When the export_all_checkBox is checked, select all objects in the Maya scene.
+        When unchecked, clear the selection in Maya.
+        """
+        # Check if the checkbox is checked
+        if self.mainwidget.export_all_checkBox.isChecked():
+            # Get all objects in the scene (excluding default Maya objects)
+            all_objects = cmds.ls(dag=True, long=True)
+            
+            # Filter out default cameras and other Maya default objects
+            # This is a basic filter - you might need to adjust based on your needs
+            filtered_objects = [obj for obj in all_objects if not obj.startswith('|camera') 
+                                and not obj.startswith('|light') 
+                                and not 'initialShadingGroup' in obj 
+                                and not 'defaultLightSet' in obj
+                                and not 'defaultObjectSet' in obj]
+            
+            # Select all filtered objects
+            if filtered_objects:
+                cmds.select(filtered_objects, replace=True)
+        else:
+            # If checkbox is unchecked, clear selection
+            cmds.select(clear=True)
+
+    def show_table_context_menu(self, position):
+        # Show the context menu only for the tableWidget
+        global_pos = self.mainwidget.export_tableWidget.mapToGlobal(position)
+        self.context_menu.exec_(global_pos)
+
+    def clear_all_objects(self):
+        # Clear all rows from the table widget
+        self.mainwidget.export_tableWidget.setRowCount(0)
 
     def remove_object(self):
-        select_rows = set(index.row() for index in self.mainwidget.export_tableWidget.selectedIndexes())
-        for row in sorted(select_rows):
-            self.mainwidget.export_tableWidget.removeRow(row)
+        if self.mainwidget.export_tableWidget.selectionModel().hasSelection():
+            select_rows = set(index.row() for index in self.mainwidget.export_tableWidget.selectedIndexes())
+            if select_rows:
+                # Remove selected rows
+                for row in sorted(select_rows, reverse=True):
+                    self.mainwidget.export_tableWidget.removeRow(row)
+            else:
+                # If selection exists but no specific rows selected, it means "select all" was used
+                self.mainwidget.export_tableWidget.setRowCount(0)
 
     def output_text(self, source_row):
         column_position = self.mainwidget.export_tableWidget.columnCount()
@@ -91,14 +176,147 @@ class MainWidget(QMainWindow):
             self.mainwidget.export_tableWidget.setItem(
                 column_position, col, QTableWidgetItem(source_text))
 
-    #def set_xform(self):  # << ต้องปรับแก้จุดหมุน
-    #    if self.mainwidget.set_xform_checkBox.isChecked():
-    #        obj_selcect = cmds.ls(selection=True)
-        # is_checked = self.mainwidget.set_xform_checkBox.isChecked()
-        # print("Check:", is_checked)
-    #        for obj in obj_selcect:
-    #            cmds.xform(obj, ws=True, t=(0, 0, 0)) 
-
+    def export_selected_objects(self):
+        """
+        Exports objects from the export_tableWidget as USD files using the path from path_export.
+        Tries multiple methods to export USD files depending on Maya version.
+        """
+        # Check if the USD plugin is loaded, if not, try to load it
+        if not cmds.pluginInfo("mayaUsdPlugin", query=True, loaded=True):
+            try:
+                cmds.loadPlugin("mayaUsdPlugin")
+                print("Maya USD Plugin loaded successfully")
+            except Exception as e:
+                cmds.warning(f"Failed to load Maya USD Plugin: {str(e)}")
+                # Try the Autodesk USD plugin as an alternative
+                try:
+                    cmds.loadPlugin("pxrUsd")
+                    print("Pixar USD Plugin loaded successfully")
+                except Exception as e:
+                    cmds.warning(f"Failed to load Pixar USD Plugin: {str(e)}")
+                    try:
+                        cmds.loadPlugin("bifrostGraph")
+                        print("Bifrost plugin loaded successfully (may contain USD export)")
+                    except:
+                        cmds.warning("Unable to load any USD-compatible plugins. Please install one first.")
+                        return False
+        
+        # Check if there are any items in the tableWidget
+        if self.mainwidget.export_tableWidget.rowCount() == 0:
+            cmds.warning("No objects in the export list. Please add objects first.")
+            return False
+        
+        # Get export path from the path_export field
+        export_path = self.mainwidget.path_export.text()
+        
+        if not export_path:
+            cmds.warning("Export path is empty. Please specify a valid export path.")
+            return False
+        
+        # Ensure the path has a USD extension
+        if not export_path.lower().endswith(('.usd', '.usda', '.usdc')):
+            export_path += '.usd'
+            
+        export_dir = os.path.dirname(export_path)
+        if not os.path.exists(export_dir):
+            try:
+                os.makedirs(export_dir)
+            except Exception as e:
+                cmds.warning(f"Failed to create directory: {str(e)}")
+                return False
+        
+        # Get all objects from the tableWidget
+        objects_to_export = []
+        for row in range(self.mainwidget.export_tableWidget.rowCount()):
+            item = self.mainwidget.export_tableWidget.item(row, 1)
+            if item and item.text():
+                objects_to_export.append(item.text())
+        
+        if not objects_to_export:
+            cmds.warning("No valid objects in the export list.")
+            return False
+        
+        # Select all objects to export
+        cmds.select(objects_to_export)
+        
+        # Try multiple methods to export USD files
+        success = False
+        
+        try:
+            # Method 1: Direct usdExport command (Maya 2020+)
+            if hasattr(cmds, 'usdExport'):
+                print("Using cmds.usdExport method")
+                cmds.usdExport(
+                    file=export_path,
+                    selection=True,
+                    defaultMeshScheme='catmullClark',
+                    exportColorSets=True,
+                    exportUVs=True,
+                    exportVisibility=True,
+                    exportDisplayColor=True,
+                    mergeTransformAndShape=True
+                )
+                success = True
+            # Method 2: Using file export with USD type (Maya 2019+)
+            elif "USD Export" in cmds.pluginInfo(query=True, listPlugins=True):
+                print("Using file export with USD type")
+                cmds.file(
+                    export_path,
+                    force=True,
+                    options="",
+                    type="USD Export",
+                    exportSelected=True
+                )
+                success = True
+            # Method 3: Using mayaUSDExport mel command
+            else:
+                import maya.mel as mel
+                try:
+                    print("Attempting to use MEL mayaUSDExport command")
+                    mel_cmd = f'mayaUSDExport -mergeTransformAndShape -file "{export_path}" -selection'
+                    mel.eval(mel_cmd)
+                    success = True
+                except Exception as mel_error:
+                    print(f"MEL export error: {mel_error}")
+                    # Try other methods before giving up
+                    try:
+                        print("Attempting to use USD Export Plugin directly")
+                        cmds.file(
+                            export_path,
+                            force=True,
+                            options="",
+                            type="pxrUsdExport",
+                            exportSelected=True
+                        )
+                        success = True
+                    except Exception as pxr_error:
+                        print(f"pxrUsdExport error: {pxr_error}")
+                        # One last attempt with a different command name
+                        try:
+                            cmds.USDExport(
+                                file=export_path,
+                                selection=True
+                            )
+                            success = True
+                        except Exception as final_error:
+                            print(f"Final USD export attempt error: {final_error}")
+                            cmds.warning("All USD export methods failed.")
+                            return False
+        except Exception as e:
+            cmds.warning(f"Error during export: {str(e)}")
+            return False
+        
+        if success:
+            cmds.confirmDialog(
+                title="Export Successful", 
+                message=f"USD file exported successfully to:\n{export_path}",
+                button=["OK"]
+            )
+            return True
+        else:
+            cmds.warning("Failed to export USD file. No compatible USD export method found.")
+            return False
+    
     def export_selected_usd(self):
         stage = Usd.Stage.CreateNew('D:/Work_Year4/THESIS/02.usd')
         xformPrim = UsdGeom.Xform.Define(stage, '/hello')
@@ -122,25 +340,13 @@ class MainWidget(QMainWindow):
         cmds.mayaUSDExport(selection=True, file=output_path)
         #add_payload()'''
 
-    def add_payload(self, prim: Usd.Prim, payload_asset_path: str, payload_target_path: Sdf.Path) -> None:
+    '''def add_payload(self, prim: Usd.Prim, payload_asset_path: str, payload_target_path: Sdf.Path) -> None:
         payloads: Usd.Payloads = prim.GetPayloads()
         payloads.AddPayload(
             assetPath=payload_asset_path,
             # OPTIONAL: Payload a specific target prim. Otherwise, uses the payloadd layer's defaultPrim.
             primPath=payload_target_path
-            )
-
-    def create_new_usd_stage(self):
-        # cmds.mayaUSDImport(file = 'D:/Work_Year4/THESIS/Maya/living_room_assets/scenes/USD/dice.usd')
-        # stage =  Usd.Stage.CreateNew()
-        # stage1 = cmds.mayaUsdCreateStageWithNewLayer()
-        # xformPrim = UsdGeom.Xform.Define(stage, '/hello')
-        # stage.GetRootLayer().Save()
-
-        stage = cmds.mayaUsdCreateStageWithNewLayer('')
-        xform_path = "/World/MyXform"
-        xform = UsdGeom.Xform.Define(stage, xform_path)
-        return xform
+            )'''
 
     def open_selcect_folder(self):
         folder_path = QFileDialog.getExistingDirectory()
