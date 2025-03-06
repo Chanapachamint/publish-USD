@@ -10,7 +10,7 @@ import logging
 import maya.cmds as cmds
 import maya.OpenMayaUI as omui
 from pxr import Usd, UsdGeom, Gf, Sdf
-from util_usd import ufeUtils
+#from util_usd import ufeUtils
 
 try:
     from PySide6.QtCore import *
@@ -26,7 +26,7 @@ except Exception:
     from shiboken2 import wrapInstance
 
 
-usdSeparator = '/'
+#usdSeparator = '/'
 
 pathDir = os.path.dirname(sys.modules[__name__].__file__)
 fileUi = '%s/uiwidget.ui' % pathDir
@@ -320,7 +320,7 @@ class MainWidget(QMainWindow):
         try:
             # Export the selected object to USD
             # Use the appropriate export command for your Maya version/setup:
-            cmds.mayaUSDExport(file=export_path, selection=True)
+            cmds.mayaUSDExport(file=export_path, selection=True, renderLayerMode='defaultLayer', exportUVs=True)
             
             # Create a proxy to view the exported USD
             cmds.createNode('mayaUsdProxyShape', name='stageShape')
