@@ -10,7 +10,7 @@ import logging
 import maya.cmds as cmds
 import maya.OpenMayaUI as omui
 from pxr import Usd, UsdGeom, Gf, Sdf
-#from util_usd import ufeUtils
+from util_usd import ufeUtils
 
 try:
     from PySide6.QtCore import *
@@ -26,7 +26,7 @@ except Exception:
     from shiboken2 import wrapInstance
 
 
-#usdSeparator = '/'
+usdSeparator = '/'
 
 pathDir = os.path.dirname(sys.modules[__name__].__file__)
 fileUi = '%s/uiwidget.ui' % pathDir
@@ -59,7 +59,7 @@ class MainWidget(QMainWindow):
 
         self.mainwidget.add_button.clicked.connect(self.add_object)
         self.mainwidget.remove_button.clicked.connect(self.remove_object)
-        self.mainwidget.export_button.clicked.connect(self.export_selected_to_usd)
+        self.mainwidget.export_button.clicked.connect(self.export_selected)
         self.mainwidget.export_tableWidget.itemSelectionChanged.connect(self.sync_selection_with_maya)
         self.mainwidget.export_all_checkBox.stateChanged.connect(self.export_all_checkbox_changed)
         self.mainwidget.import_pushButton.clicked.connect(self.import_usd_to_own_stage)
@@ -300,6 +300,45 @@ class MainWidget(QMainWindow):
     def main_export_process(self, export_tableWidget, path_export):
         self.export_selected_from_table(export_tableWidget, path_export)
 
+    def export_selected(self):
+            # Get export path from the UI
+            export_path = self.mainwidget.path_export.text()
+            
+            # Get the selected object name from the table widget
+            selected_row = 0  # First row in the table
+            maya_object_name = self.mainwidget.export_tableWidget.item(selected_row, 0).text()
+            
+            # Select the object in Maya to ensure it's the active selection
+            cmds.select(maya_object_name)
+            
+            # Get the full path of the selected object
+            maya_object_name = self.mainwidget.export_tableWidget.item(selected_row, 0).text()
+
+            if not export_path.endswith('.usda'):
+                export_path += '.usda'
+            # Create and export to USD
+            try:
+                # Export the selected object to USD
+                # Use the appropriate export command for your Maya version/setup:
+                cmds.mayaUSDExport(file=export_path, selection=True, renderLayerMode='defaultLayer', exportUVs=True)
+                
+                # Create a proxy to view the exported USD
+                cmds.createNode('mayaUsdProxyShape', name='stageShape')
+                shape_node = cmds.ls(sl=True, l=True)[0]
+                cmds.setAttr('{}.filePath'.format(shape_node), export_path, type='string')
+                
+                # Connect time
+                cmds.select(clear=True)
+                cmds.connectAttr('time1.outTime', '{}.time'.format(shape_node))
+                
+                print(f"Successfully exported {maya_object_name} to {export_path}")
+                print(f"Created USD proxy: {shape_node}")
+                
+                return True
+            except Exception as e:
+                print(f"Error exporting to USD: {str(e)}")
+                return False 
+
     def export_selected_to_usd(self):
         # Get export path from the UI
         export_path = self.mainwidget.path_export.text()
@@ -311,33 +350,121 @@ class MainWidget(QMainWindow):
         # Select the object in Maya to ensure it's the active selection
         cmds.select(maya_object_name)
         
-        # Get the full path of the selected object
-        maya_object_name = self.mainwidget.export_tableWidget.item(selected_row, 0).text()
-
+        # Get the short name of the object (without the full path)
+        short_name = cmds.ls(maya_object_name, shortNames=True)[0]
+        
+        # Make sure the path has the .usda extension
         if not export_path.endswith('.usda'):
             export_path += '.usda'
+        
+        # Create asset export path
+        asset_export_path = export_path
+        
         # Create and export to USD
         try:
-            # Export the selected object to USD
-            # Use the appropriate export command for your Maya version/setup:
-            cmds.mayaUSDExport(file=export_path, selection=True, renderLayerMode='defaultLayer', exportUVs=True)
+            # Export the selected object to USD with Arnold data preserved
+            cmds.file(
+                asset_export_path, 
+                force=True, 
+                type="USD Export", 
+                options=";exportUVs=1;exportColorSets=1;exportComponentTags=1;defaultMeshScheme=catmullClark;defaultUSDFormat=usda;parentScope=Arnold_Data;jobContext=[Arnold];materialsScopeName=mtl;exportMaterials=true", 
+                exportSelected=True
+            )
             
-            # Create a proxy to view the exported USD
+            # Create a model USD file that references the exported asset
+            model_filename = os.path.join(
+                os.path.dirname(export_path),
+                f"{short_name}_model.usda"
+            )
+            
+            # Define variants
+            variants = [("default", asset_export_path)]
+            
+            # Create the model USD file with variants
+            stage = self.create_variants_file(
+                model_filename,
+                variants=variants,
+                variantset="model",
+                variant_prim="/root",
+                reference_prim="/root/geo",
+                as_payload=True
+            )
+            
+            # Set stage metadata
+            from pxr import UsdGeom
+            UsdGeom.SetStageMetersPerUnit(stage, 1)
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.y)
+            
+            # Save the model USD file
+            stage.GetRootLayer().Save()
+            
+            # Create a proxy to view the model USD
             cmds.createNode('mayaUsdProxyShape', name='stageShape')
             shape_node = cmds.ls(sl=True, l=True)[0]
-            cmds.setAttr('{}.filePath'.format(shape_node), export_path, type='string')
+            cmds.setAttr('{}.filePath'.format(shape_node), model_filename, type='string')
             
             # Connect time
             cmds.select(clear=True)
             cmds.connectAttr('time1.outTime', '{}.time'.format(shape_node))
             
-            print(f"Successfully exported {maya_object_name} to {export_path}")
+            print(f"Successfully exported {short_name} to {asset_export_path}")
+            print(f"Created model USD file: {model_filename}")
             print(f"Created USD proxy: {shape_node}")
             
             return True
         except Exception as e:
             print(f"Error exporting to USD: {str(e)}")
-            return False 
+            return False
+    
+    def create_variants_file(self, filename, variants, variantset, variant_prim, reference_prim, as_payload=False):
+        """Create a USD file with variants.
+        
+        Args:
+            filename (str): The output USD file path
+            variants (list): List of (variant_name, file_path) tuples
+            variantset (str): Name of the variant set
+            variant_prim (str): Path to the prim that will have the variant set
+            reference_prim (str): Path to the prim that will reference/payload the variant
+            as_payload (bool): Whether to use payloads instead of references
+        
+        Returns:
+            Usd.Stage: The created USD stage
+        """
+        from pxr import Usd, UsdGeom, Sdf, Kind
+        
+        # Create a new USD stage
+        stage = Usd.Stage.CreateNew(filename)
+        
+        # Create the root prim
+        root = stage.DefinePrim(variant_prim, "Xform")
+        stage.SetDefaultPrim(root)
+        
+        # Create a variant set on the root prim
+        variantSet = root.GetVariantSets().AddVariantSet(variantset)
+        
+        # Create a geo prim under the root prim
+        geo = stage.DefinePrim(reference_prim, "Xform")
+        
+        # For each variant, add a variant to the variant set
+        for variant_name, path in variants:
+            # Create a new variant
+            variantSet.AddVariant(variant_name)
+            variantSet.SetVariantSelection(variant_name)
+            
+            # Enter the variant editing context
+            with variantSet.GetVariantEditContext():
+                if as_payload:
+                    # Add a payload to the geo prim
+                    geo.GetPayloads().AddPayload(path)
+                else:
+                    # Add a reference to the geo prim
+                    geo.GetReferences().AddReference(path)
+        
+        # Set the default variant selection to the first variant
+        if variants:
+            variantSet.SetVariantSelection(variants[0][0])
+        
+        return stage
 
     #def export_selected_usd(self):
         #stage = Usd.Stage.CreateNew('D:/Work_Year4/THESIS/02.usd')
@@ -379,29 +506,31 @@ class MainWidget(QMainWindow):
 
         if folder_path:
             self.mainwidget.path_import.setText(folder_path)
-            self.show_usd_file()
+            self.show_usd_file()  # No parameter needed
 
     def open_folder(self):
         folder_path = QFileDialog.getExistingDirectory()
         self.mainwidget.path_export.setText(folder_path)
 
-    def show_usd_file(self):
+    def show_usd_file(self):  # Remove the parameter
         self.mainwidget.import_listWidget.clear()
 
         folder_path = self.mainwidget.path_import.text()
 
-        if not folder_path or not os.path.exists(folder_path):
-            QWidget.QMessageBox.warning(
-                self, "Error", "Invalid folder path selected!")
+        if not os.path.exists(folder_path):
+            print(f"Folder not found: {folder_path}")
             return
 
         # Find all .usd files in the folder
-        usd_files = [f for f in os.listdir(folder_path) if f.endswith(".usd")]
-
-        # Populate the ListWidget
-        if usd_files:
-            self.mainwidget.import_listWidget.addItems(usd_files)
-            return
+        usd_files = []
+        for file in os.listdir(folder_path):
+            if file.lower().endswith(('.usd', '.usda', '.usdc')):
+                # Get just the filename without the full path for display
+                usd_files.append(file)
+        
+        # Add the USD files to the listWidget
+        for usd_file in usd_files:
+            self.mainwidget.import_listWidget.addItem(usd_file)
 
     def onItemSelected(self):
         '''Handles user selecting a USD file and importing it into the stage.'''
